@@ -22,12 +22,16 @@ from sttn_video_inpaint import build_sttn_model, \
     inpaint_video_with_builded_sttn
 from pytracking.lib.test.evaluation.data import Sequence
 from utils import dilate_mask, show_mask, show_points, get_clicked_point
-
+from tqdm import tqdm
 
 def setup_args(parser):
     parser.add_argument(
-        "--input_video", type=str, required=True,
+        "--input_video", type=str, required=False,
         help="Path to a single input video",
+    )
+    parser.add_argument(
+        "--input_images", type=str, required=True,
+        help="Path to a single images",
     )
     parser.add_argument(
         "--coords_type", type=str, required=True,
@@ -82,7 +86,7 @@ def setup_args(parser):
         help="Which mask in the first frame to determine the inpaint region.",
     )
     parser.add_argument(
-        "--fps", type=int, default=25, required=True,
+        "--fps", type=int, default=25, required=False,
         help="FPS of the input and output videos.",
     )
 
@@ -236,17 +240,18 @@ class RemoveAnythingVideo(nn.Module):
         beg = time.time()
         all_box = self.forward_tracker(frame_ps, key_box)
         end = time.time()
-        print("Tracking per frame costs: %.3f seconds" %((end-beg)/len(frame_ps)))
+        ptwithline("Tracking frame costs: %.3f seconds" %(end-beg))
+        
 
         # get all-frame masks using sam
         print("Segmenting ...")
         all_mask = [key_mask]
         all_frame = [key_frame]
         ref_mask = key_mask
-        for frame_p, box in zip(frame_ps[1:], all_box[1:]):
+        beg = time.time()
+        for frame_p, box in tqdm(list(zip(frame_ps[1:], all_box[1:]))):
             
-            beg = time.time()
-            
+
             frame = iio.imread(frame_p)
 
             # XYWH -> XYXY
@@ -256,23 +261,26 @@ class RemoveAnythingVideo(nn.Module):
             mask = self.mask_selection(masks, scores, ref_mask)
             if dilate_kernel_size is not None:
                 mask = dilate_mask(mask, dilate_kernel_size)
-                
-            end = time.time()
-            print("Segmenting frame costs: %.3f seconds"%(end-beg))
-            
+ 
             ref_mask = mask
             all_mask.append(mask)
             all_frame.append(frame)
+            
+        end = time.time()
+        ptwithline("Segmenting frame costs: %.3f seconds"%(end-beg))
 
         # get all-frame inpainted results
-        print("====================================")
         print("Inpainting ...")
         beg = time.time()
         all_frame = self.forward_inpainter(all_frame, all_mask)
         end = time.time()
-        print("Inpainting per frame costs: %.3f seconds" %((end-beg)/len(frame_ps)))
+        ptwithline("Inpainting frame costs: %.3f seconds" %(end-beg))
+
         return all_frame, all_mask, all_box
 
+def ptwithline(msg):
+    print("====================================")
+    print(msg)
 
 def mkstemp(suffix, dir=None):
     fd, path = tempfile.mkstemp(suffix=f"{suffix}", dir=dir)
@@ -325,23 +333,7 @@ def show_img_with_box(img, box):
 
 
 if __name__ == "__main__":
-    """Example usage:
-    python remove_anything_video_img.py \
-        --input_video ~/work/Inpaint-Anything/example/1v1p/videos/frog.mp4 \
-        --coords_type key_in \
-        --point_coords 906 544 \
-        --point_labels 1 \
-        --dilate_kernel_size 15 \
-        --output_dir ./newresults \
-        --sam_model_type "vit_h" \
-        --lama_config lama/configs/prediction/default.yaml \
-        --sam_ckpt ~/work/Inpaint-Anything/pretrained_models/sam_vit_h_4b8939.pth \
-        --lama_ckpt ~/work/Inpaint-Anything/pretrained_models/big-lama \
-        --tracker_ckpt vitb_384_mae_ce_32x4_ep300 \
-        --vi_ckpt ~/work/Inpaint-Anything/pretrained_models/sttn.pth \
-        --mask_idx 2 \
-        --fps 30
-    """
+  
     parser = argparse.ArgumentParser()
     setup_args(parser)
     args = parser.parse_args(sys.argv[1:])
@@ -360,13 +352,14 @@ if __name__ == "__main__":
     dilate_kernel_size = args.dilate_kernel_size
     key_frame_mask_idx = args.mask_idx
     video_raw_p = args.input_video
+    images_raw_p = args.input_images
     frame_raw_glob = None
     fps = args.fps
     num_frames = 10000
     output_dir = args.output_dir
     output_dir = Path(f"{output_dir}")
-    frame_mask_dir = output_dir / f"mask_{dilate_kernel_size}"
-    frame_rmmask_dir = output_dir / f"rm_mask_{dilate_kernel_size}"
+    frame_mask_dir = output_dir / f"mask"
+    frame_rmmask_dir = output_dir / f"inpaint_imgs"
     video_mask_p = output_dir / f"mask_{dilate_kernel_size}.mp4"
     video_rm_w_mask_p = output_dir / f"removed_w_mask_{dilate_kernel_size}.mp4"
     video_w_mask_p = output_dir / f"w_mask_{dilate_kernel_size}.mp4"
@@ -378,18 +371,19 @@ if __name__ == "__main__":
     
 
     # load raw video or raw frames
-    if Path(video_raw_p).exists():
+    frame_ps = []
+    if(Path(images_raw_p).exists()):
+        frame_ps = [os.path.join(images_raw_p,imgname) for imgname in sorted(os.listdir(images_raw_p))]
+    elif Path(video_raw_p).exists():
         all_frame = iio.mimread(video_raw_p, memtest=False)
         fps = imageio.v3.immeta(video_raw_p, exclude_applied=False)["fps"]
 
         # tmp frames
-        frame_ps = []
         for i in range(len(all_frame)):
-            frame_p = str(mkstemp(suffix=f"{i:0>6}.png"))
+            # frame_p = str(mkstemp(suffix=f"{i:0>6}.png"))
+            frame_p = os.path.join()
             frame_ps.append(frame_p)
             iio.imwrite(frame_ps[i], all_frame[i])
-            
-    
     else:
         assert frame_raw_glob is not None
         frame_ps = sorted(glob.glob(frame_raw_glob))
@@ -400,8 +394,7 @@ if __name__ == "__main__":
 
     frame_ps = frame_ps[:num_frames]
     
-    print("====================================")
-    print("frame cnt :",len(frame_ps))
+    ptwithline("frame number :{}".format(len(frame_ps)))
     beg = time.time()
 
     # inference
@@ -415,32 +408,32 @@ if __name__ == "__main__":
         )
         
     end = time.time()
-    print("====================================")
-    print("per frame cost: ",(end-beg)/len(frame_ps))
-    print("====================================")
+    
 
     # visual removed results
     for i in range(len(all_frame_rm_w_mask)):
         rm_mask_p = frame_rmmask_dir /  f"{i:0>6}.jpg"
         iio.imwrite(rm_mask_p, all_frame_rm_w_mask[i])
-    iio.mimwrite(video_rm_w_mask_p, all_frame_rm_w_mask, fps=fps,**kargs)
+    # iio.mimwrite(video_rm_w_mask_p, all_frame_rm_w_mask, fps=fps,**kargs)
 
     # visual mask
     all_mask = [np.uint8(mask * 255) for mask in all_mask]
     for i in range(len(all_mask)):
         mask_p = frame_mask_dir /  f"{i:0>6}.jpg"
         iio.imwrite(mask_p, all_mask[i])
-    iio.mimwrite(video_mask_p, all_mask, fps=fps,**kargs)
+    # iio.mimwrite(video_mask_p, all_mask, fps=fps,**kargs)
         
     # visual video with mask
-    tmp = []
-    for i in range(len(all_mask)):
-        tmp.append(show_img_with_mask(all_frame[i], all_mask[i]))
-    iio.mimwrite(video_w_mask_p, tmp, fps=fps,**kargs)
-    tmp = []
+    # tmp = []
+    # for i in range(len(all_mask)):
+
+    #     tmp.append(show_img_with_mask(all_frame[i], all_mask[i]))
+    #     iio.imwrite()
+    # iio.mimwrite(video_w_mask_p, tmp, fps=fps,**kargs)
+    # tmp = []
     
     
-    # visual video with box
-    for i in range(len(all_box)):
-        tmp.append(show_img_with_box(all_frame[i], all_box[i]))
-    iio.mimwrite(video_w_box_p, tmp, fps=fps,**kargs)
+    # # visual video with box
+    # for i in range(len(all_box)):
+    #     tmp.append(show_img_with_box(all_frame[i], all_box[i]))
+    # iio.mimwrite(video_w_box_p, tmp, fps=fps,**kargs)
